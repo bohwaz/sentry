@@ -1,13 +1,8 @@
+# Source: https://docs.sentry.io/server/installation/python/
+
 # Requirements
 apt-get update && apt-get upgrade -y
-apt-get install -y  python-setuptools python-pip python-dev libxslt1-dev libxml2-dev libz-dev libffi-dev libssl-dev libpq-dev libyaml-dev postgresql nginx-full supervisor
-add-apt-repository ppa:chris-lea/redis-server
-apt-get update
-apt-get install redis-server redis-tools
-
-# Checking redis > 3.0
-redis-server --version
-systemctl restart redis-server
+apt-get install -y  python-setuptools python-pip python-dev libxslt1-dev libxml2-dev libz-dev libffi-dev libssl-dev libpq-dev libyaml-dev postgresql nginx-full supervisor redis-server
 
 #Create a sentry user, IMPORTANT to run sentry web and worker
 sudo adduser sentry
@@ -71,6 +66,9 @@ mail.username: ''
 mail.password: ''
 mail.use-tls: false
 
+# Make sure there is some swap on the server, as the sentry upgrade first run WILL fail with less than 4GB of RAM!
+# see https://github.com/getsentry/sentry/issues/8862#issuecomment-447259743
+
 #  Initialize the database by running the upgrade function of Sentry:
 SENTRY_CONF=/etc/sentry sentry upgrade
 
@@ -97,41 +95,35 @@ service nginx restart
 #log out from sentry user IMPORTANT.
 exit
 
-# Configure Sentry server as a service with supervisord standard put the following configuration in the file /etc/supervisor/conf.d/sentry.conf:
-[program:sentry-web]
-directory=/www/sentry/
-environment=SENTRY_CONF="/etc/sentry"
-command=/www/sentry/bin/sentry run web
-autostart=true
-autorestart=true
-redirect_stderr=true
-user=sentry
-stdout_logfile=syslog
-stderr_logfile=syslog
+# Configure systemd to start services: https://docs.sentry.io/server/installation/python/#configure-systemd
+# Don't forget to append "-b localhost" to the ExecStart for sentry-web or the sentry web server will be available to everyone on port 9000!
 
-[program:sentry-worker]
-directory=/www/sentry/
-environment=SENTRY_CONF="/etc/sentry"
-command=/www/sentry/bin/sentry run worker
-autostart=true
-autorestart=true
-redirect_stderr=true
-user=sentry
-stdout_logfile=syslog
-stderr_logfile=syslog
+# Install dehydrated and configure it to create a certificate for your domain in nginx:
 
-[program:sentry-cron]
-directory=/www/sentry/
-environment=SENTRY_CONF="/etc/sentry"
-command=/www/sentry/bin/sentry run cron
-autostart=true
-autorestart=true
-redirect_stderr=true
-stdout_logfile=syslog
-stderr_logfile=syslog
+server {
+    listen 443 ssl;
+    server_name sentry.xxx;
 
-# 2 . Save the file and reload supervisor:
-sudo supervisorctl reread
-sudo supervisorctl update
-sudo supervisorctl start all
-sudo supervisorctl status
+    # Comment these line before you get the certificate for the first time
+    ssl_certificate /var/lib/dehydrated/certs/sentry.xxx/fullchain.pem;
+    ssl_certificate_key /var/lib/dehydrated/certs/sentry.xxx/privkey.pem;
+
+
+    location / {
+        proxy_pass         http://localhost:9000;
+        proxy_redirect     off;
+
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }   
+
+
+    location ^~ /.well-known/acme-challenge {
+        alias /var/lib/dehydrated/acme-challenges;
+    }
+}
+
+# Add domain to /etc/dehydrated/domains.txt then run "dehydrated -c"
+# And add a daily cron  that does "dehydrated -c; service nginx reload"
+
